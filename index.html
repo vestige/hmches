@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple Chess vs CPU</title>
+  <style>
+    :root {
+      --sq: 64px;
+      --light: #f0d9b5;
+      --dark: #b58863;
+      --sel: rgba(60, 120, 255, 0.45);
+      --hint: rgba(60, 255, 120, 0.35);
+      --cap: rgba(255, 80, 80, 0.35);
+      --border: #222;
+      --panel: #111;
+      --text: #eee;
+      --muted: #bbb;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif;
+      background: #0b0d10;
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+    }
+    .wrap {
+      width: min(980px, 94vw);
+      display: grid;
+      gap: 16px;
+      grid-template-columns: 1fr 320px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .wrap { grid-template-columns: 1fr; }
+    }
+    .board {
+      display: grid;
+      grid-template-columns: repeat(8, var(--sq));
+      grid-template-rows: repeat(8, var(--sq));
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      user-select: none;
+      width: fit-content;
+      background: #000;
+    }
+    .sq {
+      width: var(--sq);
+      height: var(--sq);
+      display: grid;
+      place-items: center;
+      font-size: 40px;
+      cursor: pointer;
+      position: relative;
+    }
+    .light { background: var(--light); }
+    .dark { background: var(--dark); }
+    .sq.sel::after,
+    .sq.hint::after,
+    .sq.cap::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .sq.sel::after { background: var(--sel); }
+    .sq.hint::after { background: var(--hint); }
+    .sq.cap::after { background: var(--cap); }
+    .panel {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    button, select {
+      background: #1a1f27;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+    button:hover { border-color: rgba(255,255,255,0.25); }
+    .muted { color: var(--muted); font-size: 13px; }
+    .status { font-size: 14px; line-height: 1.4; }
+    .log {
+      margin-top: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 140px;
+    }
+    .title { font-size: 16px; font-weight: 700; margin: 0 0 8px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <div id="board" class="board" aria-label="chess board"></div>
+      <div class="muted" style="margin-top:10px;">
+        クリックで駒選択 → ハイライト先へ移動。昇格は自動でクイーン。
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="title">Simple Chess vs CPU</p>
+
+      <div class="row">
+        <button id="newBtn">新規</button>
+        <button id="undoBtn">Undo</button>
+      </div>
+
+      <div class="row">
+        <label class="muted">CPU強さ</label>
+        <select id="levelSel">
+          <option value="1">Lv1（ランダム寄り）</option>
+          <option value="2" selected>Lv2（ほどほど）</option>
+          <option value="3">Lv3（少し考える）</option>
+        </select>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div class="log" id="log"></div>
+      <div class="muted" style="margin-top:10px;">
+        ルール判定は chess.js（合法手/王手/詰み/引き分け等）に任せています。 :contentReference[oaicite:2]{index=2}
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Chess } from "https://unpkg.com/chess.js@1.1.0/dist/esm/chess.js";
+    // ↑ ESMビルド（dist/esm/chess.js）が公開されている :contentReference[oaicite:3]{index=3}
+
+    // ====== UI設定 ======
+    const boardEl = document.getElementById("board");
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const newBtn = document.getElementById("newBtn");
+    const undoBtn = document.getElementById("undoBtn");
+    const levelSel = document.getElementById("levelSel");
+
+    // ユーザー：白、CPU：黒
+    const HUMAN = "w";
+    const CPU = "b";
+
+    const PIECE_TO_CHAR = {
+      pw:"♙", nw:"♘", bw:"♗", rw:"♖", qw:"♕", kw:"♔",
+      pb:"♟", nb:"♞", bb:"♝", rb:"♜", qb:"♛", kb:"♚"
+    };
+
+    // 盤面表示の座標（a1は左下）をUIにどう並べるか
+    // ここでは「白視点」で、UIの上段が8段目になるように表示
+    const FILES = ["a","b","c","d","e","f","g","h"];
+
+    // ====== ゲーム状態 ======
+    let game = new Chess();
+    let selected = null;             // "e2" など
+    let legalTargets = [];           // ["e4","e3"...]
+    let legalCaptures = new Set();   // capture先
+
+    // ====== 盤面生成 ======
+    const squares = new Map(); // "e2" -> div
+
+    function buildBoard() {
+      boardEl.innerHTML = "";
+      squares.clear();
+
+      for (let rank = 8; rank >= 1; rank--) {
+        for (let f = 0; f < 8; f++) {
+          const file = FILES[f];
+          const sq = `${file}${rank}`;
+
+          const div = document.createElement("div");
+          div.className = `sq ${((rank + f) % 2 === 0) ? "dark" : "light"}`;
+          div.dataset.sq = sq;
+
+          div.addEventListener("click", () => onSquareClick(sq));
+
+          boardEl.appendChild(div);
+          squares.set(sq, div);
+        }
+      }
+    }
+
+    function clearMarks() {
+      for (const div of squares.values()) {
+        div.classList.remove("sel","hint","cap");
+      }
+    }
+
+    function render() {
+      // 盤面
+      for (const [sq, div] of squares) {
+        const p = game.get(sq); // {type:'p',color:'w'} or null
+        if (!p) {
+          div.textContent = "";
+        } else {
+          div.textContent = PIECE_TO_CHAR[`${p.type}${p.color}`] || "";
+        }
+      }
+
+      clearMarks();
+      if (selected) squares.get(selected)?.classList.add("sel");
+      for (const t of legalTargets) squares.get(t)?.classList.add("hint");
+      for (const t of legalCaptures) squares.get(t)?.classList.add("cap");
+
+      // ステータス
+      const turn = game.turn() === "w" ? "白（あなた）" : "黒（CPU）";
+      let extra = "";
+      if (game.isCheckmate()) extra = " / チェックメイト！";
+      else if (game.isStalemate()) extra = " / ステイルメイト";
+      else if (game.isDraw()) extra = " / 引き分け";
+      else if (game.isCheck()) extra = " / 王手";
+
+      statusEl.textContent = `手番: ${turn}${extra}`;
+      logEl.textContent = game.pgn({ max_width: 5e9 }) || "(まだ手がありません)";
+    }
+
+    function selectSquare(sq) {
+      selected = sq;
+
+      // verboseで取り出すと from/to が取れる
+      const moves = game.moves({ square: sq, verbose: true });
+
+      legalTargets = moves.map(m => m.to);
+
+      legalCaptures = new Set();
+      for (const m of moves) {
+        if (m.captured) legalCaptures.add(m.to);
+      }
+    }
+
+    function resetSelection() {
+      selected = null;
+      legalTargets = [];
+      legalCaptures = new Set();
+    }
+
+    // ====== 人の操作 ======
+    function onSquareClick(sq) {
+      if (game.isGameOver()) return;
+      if (game.turn() !== HUMAN) return; // CPUの手番は操作させない
+
+      const piece = game.get(sq);
+
+      // 1) すでに選択していて、その先を押した
+      if (selected && legalTargets.includes(sq)) {
+        // 昇格は簡易に常にクイーン
+        const moveObj = { from: selected, to: sq, promotion: "q" };
+        const moved = game.move(moveObj);
+        resetSelection();
+        render();
+
+        if (moved) {
+          // CPUの手番
+          window.setTimeout(cpuMove, 50);
+        }
+        return;
+      }
+
+      // 2) 自分の駒をクリックしたら選択
+      if (piece && piece.color === HUMAN) {
+        selectSquare(sq);
+        render();
+        return;
+      }
+
+      // 3) それ以外は選択解除
+      resetSelection();
+      render();
+    }
+
+    // ====== CPU（簡易エンジン） ======
+    const PIECE_VALUE = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+    function evaluateMaterial(chess) {
+      let score = 0;
+      // a1..h8 を総当たり
+      for (let rank = 1; rank <= 8; rank++) {
+        for (const file of FILES) {
+          const sq = `${file}${rank}`;
+          const p = chess.get(sq);
+          if (!p) continue;
+          const v = PIECE_VALUE[p.type] || 0;
+          score += (p.color === CPU ? v : -v);
+        }
+      }
+
+      // 軽いボーナス：相手に王手
+      if (chess.isCheck()) {
+        score += (chess.turn() === HUMAN) ? 30 : -30;
+      }
+
+      return score;
+    }
+
+    function minimax(chess, depth, alpha, beta, maximizing) {
+      if (depth === 0 || chess.isGameOver()) {
+        // 終局を少し強く評価
+        if (chess.isCheckmate()) {
+          // 手番側が詰んでる
+          return (chess.turn() === CPU) ? -999999 : 999999;
+        }
+        return evaluateMaterial(chess);
+      }
+
+      const moves = chess.moves({ verbose: true });
+
+      if (maximizing) {
+        let best = -Infinity;
+        for (const m of moves) {
+          chess.move({ from: m.from, to: m.to, promotion: "q" });
+          const val = minimax(chess, depth - 1, alpha, beta, false);
+          chess.undo();
+          best = Math.max(best, val);
+          alpha = Math.max(alpha, best);
+          if (beta <= alpha) break;
+        }
+        return best;
+      } else {
+        let best = Infinity;
+        for (const m of moves) {
+          chess.move({ from: m.from, to: m.to, promotion: "q" });
+          const val = minimax(chess, depth - 1, alpha, beta, true);
+          chess.undo();
+          best = Math.min(best, val);
+          beta = Math.min(beta, best);
+          if (beta <= alpha) break;
+        }
+        return best;
+      }
+    }
+
+    function pickCpuMove(level) {
+      const moves = game.moves({ verbose: true });
+      if (moves.length === 0) return null;
+
+      // Lv1: かなりランダム（たまにだけ評価）
+      if (level === 1) {
+        if (Math.random() < 0.7) return moves[Math.floor(Math.random() * moves.length)];
+      }
+
+      const depth = (level === 3) ? 3 : 2;
+
+      let bestMove = null;
+      let bestScore = -Infinity;
+
+      // 同点の時は揺らす（人間っぽさ）
+      const jitter = (level === 3) ? 0.5 : 2.0;
+
+      for (const m of moves) {
+        game.move({ from: m.from, to: m.to, promotion: "q" });
+        const score = minimax(game, depth - 1, -Infinity, Infinity, false);
+        game.undo();
+
+        const noisy = score + (Math.random() * jitter);
+        if (noisy > bestScore) {
+          bestScore = noisy;
+          bestMove = m;
+        }
+      }
+
+      return bestMove || moves[Math.floor(Math.random() * moves.length)];
+    }
+
+    function cpuMove() {
+      if (game.isGameOver()) { render(); return; }
+      if (game.turn() !== CPU) return;
+
+      const level = Number(levelSel.value || "2");
+      const m = pickCpuMove(level);
+      if (!m) return;
+
+      game.move({ from: m.from, to: m.to, promotion: "q" });
+      render();
+    }
+
+    // ====== ボタン ======
+    newBtn.addEventListener("click", () => {
+      game = new Chess();
+      resetSelection();
+      render();
+    });
+
+    undoBtn.addEventListener("click", () => {
+      // 人→CPU の2手を戻すのが気持ちいいので最大2回undo
+      if (game.history().length === 0) return;
+
+      game.undo();
+      if (game.turn() === CPU && game.history().length > 0) game.undo();
+
+      resetSelection();
+      render();
+    });
+
+    // 初期化
+    buildBoard();
+    render();
+  </script>
+</body>
+</html>
